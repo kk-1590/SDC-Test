@@ -6,67 +6,72 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
-using System;
-using System.Threading.Tasks;
-using CefSharp;
-using SafeExamBrowser.Browser.Events;
+using System.Timers;
 using SafeExamBrowser.Logging.Contracts;
-using BrowserSettings = SafeExamBrowser.Settings.Browser.BrowserSettings;
+using SafeExamBrowser.Monitoring.Contracts;
+using SafeExamBrowser.Settings.Security;
+using SafeExamBrowser.WindowsApi.Contracts;
 
-namespace SafeExamBrowser.Browser
+namespace SafeExamBrowser.Monitoring
 {
-	internal class Clipboard
+	public class Clipboard : IClipboard
 	{
 		private readonly ILogger logger;
-		private readonly BrowserSettings settings;
+		private readonly INativeMethods nativeMethods;
+		private readonly Timer timer;
 
-		internal string Content { get; private set; }
+		private ClipboardPolicy policy;
 
-		internal event ClipboardChangedEventHandler Changed;
-
-		internal Clipboard(ILogger logger, BrowserSettings settings)
+		public Clipboard(ILogger logger, INativeMethods nativeMethods, int timeout_ms = 50)
 		{
 			this.logger = logger;
-			this.settings = settings;
+			this.nativeMethods = nativeMethods;
+			this.timer = new Timer(timeout_ms);
 		}
 
-		internal void Process(JavascriptMessageReceivedEventArgs message)
+		public void Initialize(ClipboardPolicy policy)
 		{
-			if (settings.UseIsolatedClipboard)
-			{
-				try
-				{
-					var data = message.ConvertMessageTo<Data>();
+			this.policy = policy;
 
-					if (data != default && data.Type == "Clipboard" && TrySetContent(data.Content))
-					{
-						Task.Run(() => Changed?.Invoke(data.Id));
-					}
-				}
-				catch (Exception e)
-				{
-					logger.Error($"Failed to process browser message '{message}'!", e);
-				}
+			nativeMethods.EmptyClipboard();
+			logger.Debug("Cleared clipboard.");
+
+			if (policy != ClipboardPolicy.Allow)
+			{
+				timer.Elapsed += Timer_Elapsed;
+				timer.Start();
+
+				logger.Debug($"Started clipboard monitoring with interval {timer.Interval} ms.");
 			}
-		}
-
-		private bool TrySetContent(object value)
-		{
-			var text = value as string;
-
-			if (text != default)
+			else
 			{
-				Content = text;
+				logger.Debug("Clipboard is allowed, not starting monitoring.");
 			}
 
-			return text != default;
+			logger.Info($"Initialized clipboard for policy '{policy}'.");
 		}
 
-		private class Data
+		public void Terminate()
 		{
-			public string Content { get; set; }
-			public long Id { get; set; }
-			public string Type { get; set; }
+			nativeMethods.EmptyClipboard();
+			logger.Debug("Cleared clipboard.");
+
+			if (policy != ClipboardPolicy.Allow)
+			{
+				timer.Stop();
+				logger.Debug("Stopped clipboard monitoring.");
+			}
+			else
+			{
+				logger.Debug("Clipboard monitoring was not active.");
+			}
+
+			logger.Info($"Finalized clipboard.");
+		}
+
+		private void Timer_Elapsed(object sender, ElapsedEventArgs e)
+		{
+			nativeMethods.EmptyClipboard();
 		}
 	}
 }
